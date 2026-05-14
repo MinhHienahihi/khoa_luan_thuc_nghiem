@@ -1,0 +1,1038 @@
+---
+title: "Phân tích dữ liệu Diabetes"
+output:
+  html_document:
+    toc: true
+    theme: flatly
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+Sys.setlocale("LC_ALL", "Vietnamese_Vietnam.1258")
+options(encoding = "UTF-8")
+```
+
+```{r}
+# Đọc dữ liệu
+data <- read.csv("C:/Users/win/Downloads/Diabetes.csv")
+
+# Xem 6 dòng đầu tiên
+head(data)
+```
+
+- Kiểm tra chất lượng dữ liệu
+```{r}
+# 2. In ra tên tất cả các cột để chúng ta gọi tên cho chuẩn ở các bước sau
+print("--- TEN CAC COT BI THIEU TRONG DU LIEU ---")
+names(data)
+
+# 3. Kiểm tra xem có ô dữ liệu nào bị bỏ trống (Missing values - NA) không
+print("--- SO LUONG DƯ LIEU BI THIEU TRONG TUNG COT ---")
+colSums(is.na(data))
+```
+
+2, Xử lý dữ liệu
+-Làm sạch dữ liệu
+```{r}
+# 2. Loại bỏ các dòng trùng lặp (nếu có)
+data_clean <- unique(data)
+
+# 3. Kiểm tra lại lần cuối để đảm bảo không còn giá trị NA
+# (Bước này rất quan trọng để tránh lỗi khi chạy các mô hình Ridge/Lasso sau này)
+if(any(is.na(data_clean))) {
+  data_clean <- na.omit(data_clean)
+}
+
+print(paste("So dong du lieu lam sach:", nrow(data_clean)))
+```
+- Chuẩn hóa dữ liệu
+```{r}
+# 1. Tách biến độc lập (X) và biến mục tiêu (target)
+# Giả sử cột cuối cùng là biến mục tiêu
+X <- data_clean[, -ncol(data_clean)] 
+Y <- data_clean[, ncol(data_clean)]
+
+# 2. Thực hiện chuẩn hóa trên các biến độc lập
+# Hàm scale() trả về một matrix, chúng ta chuyển lại thành data.frame
+X_scaled <- as.data.frame(scale(X))
+
+# 3. Ghép biến mục tiêu trở lại vào tập dữ liệu đã chuẩn hóa
+data_standardized <- cbind(X_scaled, target = Y)
+
+print("--- Buoc 2: Chuan hoa du lieu ---")
+summary(data_standardized[, 1:5]) # Xem thử 5 biến đầu tiên đã về Mean = 0 chưa
+```
+- Chia dữ liệu
+```{r}
+# 1. Đặt mầm ngẫu nhiên để kết quả có thể tái lập (reproducible)
+set.seed(2026) 
+
+# 2. Tạo chỉ số ngẫu nhiên cho 80% dữ liệu
+n <- nrow(data_standardized)
+train_indices <- sample(1:n, size = 0.8 * n)
+
+# 3. Phân tách thành hai tập riêng biệt
+train_data <- data_standardized[train_indices, ]
+test_data  <- data_standardized[-train_indices, ]
+
+print("--- Buoc 3: Chia du lieu ---")
+print(paste("Kich thuoc tap Train:", nrow(train_data), "dong"))
+print(paste("Kich thuoc tap Test :", nrow(test_data), "dong"))
+```
+
+3, Phân tích dữ liệu
+
+- Thống kê mô tả
+```{r}
+library(e1071)  # để tính Skewness
+
+# Hàm tính thống kê mô tả cho một vector
+desc_stats <- function(x) {
+  c(
+    N         = length(x),
+    Mean      = mean(x,          na.rm = TRUE),
+    SD        = sd(x,            na.rm = TRUE),
+    Median    = median(x,        na.rm = TRUE),
+    Min       = min(x,           na.rm = TRUE),
+    Max       = max(x,           na.rm = TRUE),
+    Skewness  = skewness(x,      na.rm = TRUE)
+  )
+}
+
+# Áp dụng cho toàn bộ các cột của tập TRAIN
+desc_table <- t(apply(train_data, 2, desc_stats))
+
+# Làm tròn 4 chữ số thập phân
+desc_table <- round(as.data.frame(desc_table), 4)
+
+# In kết quả
+print("========== THONG KE MO TA - TAP TRAIN ==========")
+print(desc_table)
+```
+- Ma trận tương quan
+```{r}
+library(corrplot)
+library(ggplot2)
+
+# Tính ma trận tương quan
+cor_matrix <- cor(train_data, method = "pearson")
+
+# In ma trận tương quan (làm tròn 4 chữ số)
+print("========== BANG TUONG QUAN - TAP TRAIN ==========")
+print(round(cor_matrix, 4))
+```
+```{r}
+library(reshape2)
+
+# Chuyển ma trận sang dạng long
+cor_melted <- melt(cor_matrix)
+
+# Vẽ heatmap
+ggplot(cor_melted, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(value, 2)), size = 3) +
+  scale_fill_gradient2(
+    low     = "#2166AC",
+    mid     = "white", 
+    high    = "#D6604D",
+    midpoint = 0,
+    limits  = c(-1, 1),
+    name    = "Tuong quan"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Ma tran tuong quan - Tap Train",
+       x = "", y = "")
+```
+
+4, Xây dựng mô hình
+4.1, Mô hình hồi quy tuyến tính đa biến trên tập huấn luyện
+- Mô hình hồi quy
+```{r}
+# Xây dựng mô hình hồi quy tuyến tính đa biến
+model_lm <- lm(target ~ ., data = train_data)
+
+# Tóm tắt mô hình
+summary(model_lm)
+# Lấy trực tiếp từ summary() - chính xác nhất
+model_summary <- summary(model_lm)
+
+R2_train      <- model_summary$r.squared
+R2_adj_train  <- model_summary$adj.r.squared
+
+cat("========== DANH GIA MO HINH - TAP TRAIN ==========\n")
+cat(paste("MSE        :", round(MSE_train,     4), "\n"))
+cat(paste("RMSE       :", round(RMSE_train,    4), "\n"))
+cat(paste("R²         :", round(R2_train,      4), "\n"))
+cat(paste("R² hiệu chỉnh:", round(R2_adj_train, 4), "\n"))
+```
+4.2, Chọn biến
+a, Lựa chọn tập con tốt nhất
+```{r}
+library(leaps)
+
+# Thực hiện Best Subset Selection
+best_subset <- regsubsets(target ~ ., 
+                          data      = train_data,
+                          nvmax     = 10,
+                          method    = "exhaustive")
+
+best_summary <- summary(best_subset)
+
+# ============================================================
+# TINH AIC
+# ============================================================
+n <- nrow(train_data)
+
+# Hàm tính AIC từ regsubsets
+calc_aic <- function(best_summary, n) {
+  # RSS = SSE của từng mô hình
+  rss <- best_summary$rss
+  # Số biến (k) + 1 intercept
+  k   <- 1:length(rss) + 1
+  # Công thức AIC
+  aic <- n * log(rss / n) + 2 * k
+  return(aic)
+}
+
+aic_values <- calc_aic(best_summary, n)
+
+# ============================================================
+# TIM MH TOT NHAT THEO TUNG TIEU CHI
+# ============================================================
+best_adjr2 <- which.max(best_summary$adjr2)
+best_cp    <- which.min(best_summary$cp)
+best_bic   <- which.min(best_summary$bic)
+best_aic   <- which.min(aic_values)
+
+cat("========== MÔ HÌNH TỐT NHẤT THEO TỪNG TIÊU CHÍ ==========\n")
+cat(paste("R² hiệu chỉnh cao nhất : mô hình có", best_adjr2, "biến\n"))
+cat(paste("Cp nhỏ nhất            : mô hình có", best_cp,    "biến\n"))
+cat(paste("AIC nhỏ nhất           : mô hình có", best_aic,   "biến\n"))
+cat(paste("BIC nhỏ nhất           : mô hình có", best_bic,   "biến\n"))
+
+# ============================================================
+# BANG TONG HOP
+# ============================================================
+criteria_table <- data.frame(
+  So_bien  = 1:10,
+  R2_hc    = round(best_summary$adjr2, 4),
+  Cp       = round(best_summary$cp,    4),
+  AIC      = round(aic_values,          4),
+  BIC      = round(best_summary$bic,   4)
+)
+
+print("========== BANG SO SANH CAC TIEU CHI ==========")
+print(criteria_table)
+```
+- Biến được chọn theo từng tiêu chí
+```{r}
+cat("========== BIEN DUOC CHON THEO R² HIỆU CHỈNH ==========\n")
+print(coef(best_subset, best_adjr2))
+
+cat("========== BIEN DUOC CHON THEO Cp ==========\n")
+print(coef(best_subset, best_cp))
+
+cat("========== BIEN DUOC CHON THEO AIC ==========\n")
+print(coef(best_subset, best_aic))
+
+cat("========== BIEN DUOC CHON THEO BIC ==========\n")
+print(coef(best_subset, best_bic))
+```
+- Biểu đồ so sánh từng tiêu chí
+```{r}
+par(mfrow = c(2, 2))
+
+# R² hiệu chỉnh
+plot(best_summary$adjr2,
+     type = "b", pch = 19, col = "#2166AC",
+     xlab = "So bien", ylab = "R² hieu chinh",
+     main = "R² hieu chinh")
+points(best_adjr2, best_summary$adjr2[best_adjr2],
+       col = "red", pch = 19, cex = 2)
+
+# Cp
+plot(best_summary$cp,
+     type = "b", pch = 19, col = "#4DAC26",
+     xlab = "So bien", ylab = "Cp",
+     main = "Mallows Cp")
+points(best_cp, best_summary$cp[best_cp],
+       col = "red", pch = 19, cex = 2)
+
+# AIC
+plot(aic_values,
+     type = "b", pch = 19, col = "#762A83",
+     xlab = "So bien", ylab = "AIC",
+     main = "AIC")
+points(best_aic, aic_values[best_aic],
+       col = "red", pch = 19, cex = 2)
+
+# BIC
+plot(best_summary$bic,
+     type = "b", pch = 19, col = "#D6604D",
+     xlab = "So bien", ylab = "BIC",
+     main = "BIC")
+points(best_bic, best_summary$bic[best_bic],
+       col = "red", pch = 19, cex = 2)
+
+par(mfrow = c(1, 1))
+```
+
+- Lựa chọn từng bước
+```{r}
+# Mô hình đầy đủ (tất cả biến)
+model_full <- lm(target ~ ., data = train_data)
+
+# Mô hình rỗng (chỉ có intercept)
+model_null <- lm(target ~ 1, data = train_data)
+
+# ============================================================
+# 1. FORWARD SELECTION 
+# ============================================================
+model_forward <- step(model_null,
+                      scope     = list(lower = model_null, 
+                                       upper = model_full),
+                      direction = "forward",
+                      trace     = 1)   # trace=1 để xem từng bước
+
+cat("\n========== KQ FORWARD SELECTION ==========\n")
+summary(model_forward)
+
+# ============================================================
+# 2. BACKWARD ELIMINATION
+# ============================================================
+model_backward <- step(model_full,
+                       direction = "backward",
+                       trace     = 1)
+
+cat("\n========== KQ BACKWARD ELIMINATION ==========\n")
+summary(model_backward)
+
+# ============================================================
+# 3. STEPWISE 
+# ============================================================
+model_stepwise <- step(model_null,
+                       scope     = list(lower = model_null, 
+                                        upper = model_full),
+                       direction = "both",
+                       trace     = 1)
+
+cat("\n========== KQ STEPWISE (HỖN HỢP) ==========\n")
+summary(model_stepwise)
+```
+```{r}
+# ============================================================
+# ĐÁNH GIÁ 3 MÔ HÌNH STEPWISE - 4 TIÊU CHÍ
+# ============================================================
+
+# Hàm tính đầy đủ các chỉ số
+evaluate_model <- function(model, train_data, test_data) {
+  
+  # --- Tập Train ---
+  pred_train   <- predict(model, newdata = train_data)
+  actual_train <- train_data$target
+  
+  MSE_train  <- mean((actual_train - pred_train)^2)
+  RMSE_train <- sqrt(MSE_train)
+  R2_train   <- summary(model)$r.squared
+  R2_adj     <- summary(model)$adj.r.squared
+  
+  # --- Tập Test ---
+  pred_test   <- predict(model, newdata = test_data)
+  actual_test <- test_data$target
+  
+  MSE_test  <- mean((actual_test - pred_test)^2)
+  RMSE_test <- sqrt(MSE_test)
+  R2_test   <- cor(actual_test, pred_test)^2
+  
+  return(list(
+    Train = c(MSE  = round(MSE_train,  4),
+              RMSE = round(RMSE_train, 4),
+              R2   = round(R2_train,   4),
+              R2_adj = round(R2_adj,   4)),
+    Test  = c(MSE  = round(MSE_test,   4),
+              RMSE = round(RMSE_test,  4),
+              R2   = round(R2_test,    4),
+              R2_adj = NA)
+  ))
+}
+
+# Tính chỉ số cho 3 mô hình
+metrics_forward  <- evaluate_model(model_forward,  train_data, test_data)
+metrics_backward <- evaluate_model(model_backward, train_data, test_data)
+metrics_stepwise <- evaluate_model(model_stepwise, train_data, test_data)
+
+# ============================================================
+# BẢNG TỔNG HỢP TRAIN
+# ============================================================
+table_train <- data.frame(
+  Chi_so   = c("MSE", "RMSE", "R²", "R² hieu chinh"),
+  Forward  = metrics_forward$Train,
+  Backward = metrics_backward$Train,
+  Stepwise = metrics_stepwise$Train
+)
+
+cat("========== ĐÁNH GIÁ TRÊN TẬP TRAIN ==========\n")
+print(table_train, row.names = FALSE)
+
+
+
+```
+- Mô hình hồi quy 6 biến
+```{r}
+# Xem biến được chọn từ tất cả phương pháp
+cat("===== Best Subset (BIC) =====\n")
+print(coef(best_subset, best_bic))
+
+cat("===== Best Subset (AIC) =====\n")
+print(coef(best_subset, best_aic))
+
+cat("===== Best Subset (Adj R²) =====\n")
+print(coef(best_subset, best_adjr2))
+
+cat("===== Forward =====\n")
+print(coef(model_forward))
+
+cat("===== Backward =====\n")
+print(coef(model_backward))
+
+cat("===== Stepwise =====\n")
+print(coef(model_stepwise))
+```
+
+
+```{r}
+# ============================================================
+# MÔ HÌNH HỒI QUY ĐA BIẾN - TẬP BIẾN TỐT NHẤT (6 BIẾN)
+# ============================================================
+
+# Xây dựng mô hình với 6 biến tốt nhất
+model_best6 <- lm(target ~ bmi + bp + s1 + s2 + s3 + s5, 
+                  data = train_data)
+
+# Tóm tắt mô hình
+cat("========== TÓM TẮT MÔ HÌNH - 6 BIẾN TỐT NHẤT ==========\n")
+summary(model_best6)
+```
+4.3, Phương pháp chính quy hóa
+a, Hồi quy Lasso
+```{r}
+# ============================================================
+# HỒI QUY LASSO - TÌM LAMBDA TỐI ƯU
+# ============================================================
+
+library(glmnet)
+
+# Chuẩn bị dữ liệu dạng ma trận
+X_train <- as.matrix(train_data[, -which(names(train_data) == "target")])
+y_train <- train_data$target
+
+# ============================================================
+# TÌM LAMBDA TỐI ƯU BẰNG CROSS-VALIDATION (10-FOLD)
+# ============================================================
+set.seed(2026)
+cv_lasso <- cv.glmnet(X_train, y_train,
+                      alpha   = 1,        # alpha=1: Lasso
+                      nfolds  = 10)       # 10-fold CV
+
+# Lambda tối ưu
+lambda_min <- cv_lasso$lambda.min    # Lambda cho MSE nhỏ nhất
+lambda_1se <- cv_lasso$lambda.1se    # Lambda đơn giản hơn (1 SE rule)
+
+cat("========== KẾT QUẢ TÌM LAMBDA ==========\n")
+cat(paste("Lambda min (MSE nho nhat) :", round(lambda_min, 6), "\n"))
+cat(paste("Lambda 1SE (don gian hon) :", round(lambda_1se, 6), "\n"))
+
+# ============================================================
+# BIỂU ĐỒ CROSS-VALIDATION
+# ============================================================
+plot(cv_lasso,
+     main = "Lasso - Cross Validation")
+
+# Thêm chú thích
+abline(v = log(lambda_min), col = "red",  lty = 2, lwd = 2)
+abline(v = log(lambda_1se), col = "blue", lty = 2, lwd = 2)
+legend("topright",
+       legend = c(paste("lambda.min =", round(lambda_min, 4)),
+                  paste("lambda.1se =", round(lambda_1se, 4))),
+       col    = c("red", "blue"),
+       lty    = 2, lwd = 2, cex = 0.9)
+```
+
+```{r}
+# ============================================================
+# FIT MÔ HÌNH LASSO TRÊN TẬP TRAIN
+# ============================================================
+
+# Fit mô hình Lasso với lambda.min
+model_lasso <- glmnet(X_train, y_train,
+                      alpha  = 1,
+                      lambda = lambda_min)
+
+# ============================================================
+# HỆ SỐ CỦA MÔ HÌNH LASSO
+# ============================================================
+cat("========== HỆ SỐ MÔ HÌNH LASSO (lambda.min) ==========\n")
+lasso_coef <- coef(model_lasso)
+print(lasso_coef)
+
+# Biến được chọn (hệ số khác 0)
+selected_vars <- rownames(lasso_coef)[which(lasso_coef != 0)]
+selected_vars <- selected_vars[selected_vars != "(Intercept)"]
+cat("\nBien duoc chon (he so khac 0):\n")
+cat(paste(selected_vars, collapse = ", "), "\n")
+cat(paste("So bien duoc chon:", length(selected_vars), "\n"))
+
+# ============================================================
+# ĐÁNH GIÁ TRÊN TẬP TRAIN
+# ============================================================
+pred_lasso_train <- predict(model_lasso, 
+                            newx   = X_train,
+                            s      = lambda_min)
+
+actual_train     <- train_data$target
+
+MSE_lasso_train  <- mean((actual_train - pred_lasso_train)^2)
+RMSE_lasso_train <- sqrt(MSE_lasso_train)
+
+# Tính R² và R² hiệu chỉnh thủ công
+SS_res   <- sum((actual_train - pred_lasso_train)^2)
+SS_tot   <- sum((actual_train - mean(actual_train))^2)
+R2_lasso_train   <- 1 - SS_res / SS_tot
+
+n        <- nrow(train_data)
+k        <- length(selected_vars)
+R2_adj_lasso_train <- 1 - (1 - R2_lasso_train) * (n - 1) / (n - k - 1)
+
+cat("========== ĐÁNH GIÁ MÔ HÌNH LASSO - TẬP TRAIN ==========\n")
+cat(paste("MSE           :", round(MSE_lasso_train,     4), "\n"))
+cat(paste("RMSE          :", round(RMSE_lasso_train,    4), "\n"))
+cat(paste("R²            :", round(R2_lasso_train,      4), "\n"))
+cat(paste("R² hieu chinh :", round(R2_adj_lasso_train,  4), "\n"))
+
+
+```
+b, Hồi quy Ridge
+```{r}
+# ============================================================
+# HỒI QUY RIDGE - TÌM LAMBDA TỐI ƯU
+# ============================================================
+
+# Chuẩn bị dữ liệu dạng ma trận
+X_train <- as.matrix(train_data[, -which(names(train_data) == "target")])
+y_train <- train_data$target
+X_test  <- as.matrix(test_data[, -which(names(test_data) == "target")])
+y_test  <- test_data$target
+
+# ============================================================
+# TÌM LAMBDA TỐI ƯU BẰNG CROSS-VALIDATION (10-FOLD)
+# ============================================================
+set.seed(2026)
+cv_ridge <- cv.glmnet(X_train, y_train,
+                      alpha  = 0,        # alpha=0: Ridge
+                      nfolds = 10)
+
+# Lambda tối ưu
+lambda_min_ridge <- cv_ridge$lambda.min
+lambda_1se_ridge <- cv_ridge$lambda.1se
+
+cat("========== KẾT QUẢ TÌM LAMBDA - RIDGE ==========\n")
+cat(paste("Lambda min (MSE nho nhat) :", round(lambda_min_ridge, 6), "\n"))
+cat(paste("Lambda 1SE (don gian hon) :", round(lambda_1se_ridge, 6), "\n"))
+# ============================================================
+# BIỂU ĐỒ CROSS-VALIDATION - RIDGE (FIX ĐƯỜNG NÉT ĐỨT)
+# ============================================================
+plot(cv_ridge,
+     main = "Ridge - Cross Validation\n(Chon Lambda toi uu)")
+
+# Fix: dùng log âm vì trục x là -Log(λ)
+abline(v = -log(lambda_min_ridge), col = "red",  lty = 2, lwd = 2)
+abline(v = -log(lambda_1se_ridge), col = "blue", lty = 2, lwd = 2)
+
+legend("topright",
+       legend = c(paste("lambda.min =", round(lambda_min_ridge, 4)),
+                  paste("lambda.1se =", round(lambda_1se_ridge, 4))),
+       col    = c("red", "blue"),
+       lty    = 2, lwd = 2, cex = 0.9)
+
+       
+```
+
+```{r}
+# ============================================================  
+# FIT MÔ HÌNH RIDGE                                          
+# ============================================================  
+model_ridge <- glmnet(X_train, y_train,                      
+                      alpha  = 0,                             
+                      lambda = lambda_min_ridge)
+# ============================================================
+# HỆ SỐ CỦA MÔ HÌNH RIDGE
+# ============================================================
+cat("========== HỆ SỐ MÔ HÌNH RIDGE (lambda.min) ==========\n")
+ridge_coef <- coef(model_ridge)
+print(ridge_coef)
+
+# Ridge không đưa hệ số về 0 nên tất cả biến đều được giữ
+cat("\nLuu y: Ridge khong loai bien, tat ca bien deu duoc giu lai\n")
+cat(paste("So bien su dung:", nrow(ridge_coef) - 1, "\n"))
+
+# ============================================================
+# ĐÁNH GIÁ TRÊN TẬP TRAIN
+# ============================================================
+pred_ridge_train <- predict(model_ridge,
+                            newx = X_train,
+                            s    = lambda_min_ridge)
+
+MSE_ridge_train  <- mean((y_train - pred_ridge_train)^2)
+RMSE_ridge_train <- sqrt(MSE_ridge_train)
+
+SS_res_train     <- sum((y_train - pred_ridge_train)^2)
+SS_tot_train     <- sum((y_train - mean(y_train))^2)
+R2_ridge_train   <- 1 - SS_res_train / SS_tot_train
+
+n                <- nrow(train_data)
+k                <- nrow(ridge_coef) - 1   # tất cả 10 biến
+R2_adj_ridge_train <- 1 - (1 - R2_ridge_train) * (n - 1) / (n - k - 1)
+
+cat("========== ĐÁNH GIÁ MÔ HÌNH RIDGE - TẬP TRAIN ==========\n")
+cat(paste("MSE           :", round(MSE_ridge_train,     4), "\n"))
+cat(paste("RMSE          :", round(RMSE_ridge_train,    4), "\n"))
+cat(paste("R²            :", round(R2_ridge_train,      4), "\n"))
+cat(paste("R² hieu chinh :", round(R2_adj_ridge_train,  4), "\n"))
+```
+- Hồi quy thành phần chính
+```{r}
+library(pls)
+
+# ============================================================
+# TÌM SỐ THÀNH PHẦN TỐI ƯU BẰNG CROSS-VALIDATION
+# ============================================================
+set.seed(2026)
+cv_pcr <- pcr(target ~ .,
+              data       = train_data,
+              scale      = FALSE,   # đã chuẩn hóa rồi nên FALSE
+              validation = "CV",    # cross-validation
+              segments   = 10)      # 10-fold CV
+
+# Tóm tắt kết quả CV
+summary(cv_pcr)
+
+# ============================================================
+# BIỂU ĐỒ RMSEP - TÌM SỐ THÀNH PHẦN TỐI ƯU
+# ============================================================
+validationplot(cv_pcr,
+               val.type = "RMSEP",
+               main     = "PCR - Chon so thanh phan toi uu (RMSEP)",
+               xlab     = "So thanh phan chinh (M)",
+               ylab     = "RMSEP")
+
+# Tìm số thành phần có RMSEP nhỏ nhất
+rmsep_vals  <- RMSEP(cv_pcr)$val[1, 1, ]   # lấy CV RMSEP
+best_M      <- which.min(rmsep_vals) - 1    # -1 vì index bắt đầu từ 0
+
+cat("========== SỐ THÀNH PHẦN TỐI ƯU ==========\n")
+cat(paste("So thanh phan toi uu (M) :", best_M, "\n"))
+
+# Đánh dấu điểm tối ưu trên biểu đồ
+abline(v   = best_M, col = "red", lty = 2, lwd = 2)
+legend("topright",
+       legend = paste("M toi uu =", best_M),
+       col    = "red",
+       lty    = 2, lwd = 2, cex = 0.9)
+```
+
+```{r}
+# ============================================================
+# FIT MÔ HÌNH PCR VỚI SỐ THÀNH PHẦN TỐI ƯU
+# ============================================================
+model_pcr <- pcr(target ~ .,
+                 data   = train_data,
+                 scale  = FALSE,
+                 ncomp  = best_M)
+
+# Tóm tắt mô hình
+cat("========== TÓM TẮT MÔ HÌNH PCR ==========\n")
+summary(model_pcr)
+
+# ============================================================
+# PHƯƠNG SAI GIẢI THÍCH ĐƯỢC CỦA TỪNG THÀNH PHẦN
+# ============================================================
+explained_var <- explvar(model_pcr)
+
+cat("========== PHƯƠNG SAI GIẢI THÍCH ĐƯỢC ==========\n")
+var_table <- data.frame(
+  Thanh_phan     = paste0("PC", 1:best_M),
+  Phuong_sai     = round(explained_var, 4),
+  Luy_ke         = round(cumsum(explained_var), 4)
+)
+print(var_table, row.names = FALSE)
+
+# ============================================================
+# ĐÁNH GIÁ TRÊN TẬP TRAIN
+# ============================================================
+pred_pcr_train <- predict(model_pcr,
+                          newdata = train_data,
+                          ncomp   = best_M)
+
+actual_train     <- train_data$target
+
+MSE_pcr_train    <- mean((actual_train - pred_pcr_train)^2)
+RMSE_pcr_train   <- sqrt(MSE_pcr_train)
+
+SS_res_train     <- sum((actual_train - pred_pcr_train)^2)
+SS_tot_train     <- sum((actual_train - mean(actual_train))^2)
+R2_pcr_train     <- 1 - SS_res_train / SS_tot_train
+
+n                <- nrow(train_data)
+R2_adj_pcr_train <- 1 - (1 - R2_pcr_train) * (n - 1) / (n - best_M - 1)
+
+cat("========== ĐÁNH GIÁ MÔ HÌNH PCR - TẬP TRAIN ==========\n")
+cat(paste("So thanh phan (M) :", best_M,                        "\n"))
+cat(paste("MSE               :", round(MSE_pcr_train,    4),    "\n"))
+cat(paste("RMSE              :", round(RMSE_pcr_train,   4),    "\n"))
+cat(paste("R²                :", round(R2_pcr_train,     4),    "\n"))
+cat(paste("R² hieu chinh     :", round(R2_adj_pcr_train, 4),    "\n"))
+
+
+```
+
+5, So sánh lựa chọn mô hình
+```{r}
+# ============================================================
+# SO SÁNH MÔ HÌNH BẰNG CROSS-VALIDATION RMSE (10-FOLD)
+# ============================================================
+
+library(caret)
+library(glmnet)
+library(pls)
+
+set.seed(2026)
+
+# Thiết lập 10-fold CV
+ctrl <- trainControl(method  = "cv",
+                     number  = 10,
+                     verboseIter = FALSE)
+
+# ============================================================
+# 1. OLS FULL (10 biến)
+# ============================================================
+set.seed(2026)
+cv_ols_full <- train(target ~ .,
+                     data      = train_data,
+                     method    = "lm",
+                     trControl = ctrl)
+
+rmse_ols_full <- cv_ols_full$results$RMSE
+
+# ============================================================
+# 2. OLS 6 BIẾN (thay tên biến đúng theo kết quả của bạn)
+# ============================================================
+set.seed(2026)
+cv_ols_6 <- train(target ~ bmi + bp + s1 + s2 + s3 + s5,
+                  data      = train_data,
+                  method    = "lm",
+                  trControl = ctrl)
+
+rmse_ols_6 <- cv_ols_6$results$RMSE
+
+# ============================================================
+# 3. RIDGE
+# ============================================================
+set.seed(2026)
+cv_ridge_caret <- train(target ~ .,
+                        data      = train_data,
+                        method    = "glmnet",
+                        trControl = ctrl,
+                        tuneGrid  = expand.grid(
+                          alpha  = 0,
+                          lambda = lambda_min_ridge))
+
+rmse_ridge <- cv_ridge_caret$results$RMSE
+
+# ============================================================
+# 4. LASSO
+# ============================================================
+set.seed(2026)
+cv_lasso_caret <- train(target ~ .,
+                        data      = train_data,
+                        method    = "glmnet",
+                        trControl = ctrl,
+                        tuneGrid  = expand.grid(
+                          alpha  = 1,
+                          lambda = lambda_min))
+
+rmse_lasso <- cv_lasso_caret$results$RMSE
+
+# ============================================================
+# 5. PCR
+# ============================================================
+set.seed(2026)
+cv_pcr_caret <- train(target ~ .,
+                      data      = train_data,
+                      method    = "pcr",
+                      trControl = ctrl,
+                      tuneGrid  = data.frame(ncomp = best_M))
+
+rmse_pcr <- cv_pcr_caret$results$RMSE
+
+# ============================================================
+# BẢNG SO SÁNH CV RMSE
+# ============================================================
+compare_cv <- data.frame(
+  Mo_hinh = c("OLS Full (10 bien)",
+              "OLS (6 bien)",
+              "Ridge",
+              "Lasso",
+              "PCR"),
+  CV_RMSE = round(c(rmse_ols_full,
+                    rmse_ols_6,
+                    rmse_ridge,
+                    rmse_lasso,
+                    rmse_pcr), 4)
+)
+
+# Sắp xếp theo CV RMSE tăng dần
+compare_cv <- compare_cv[order(compare_cv$CV_RMSE), ]
+
+cat("========== SO SÁNH MÔ HÌNH - CV RMSE (10-FOLD) ==========\n")
+print(compare_cv, row.names = FALSE)
+
+# Mô hình tốt nhất
+cat("\n========== MÔ HÌNH TỐT NHẤT ==========\n")
+cat(paste("CV RMSE nho nhat:",
+          compare_cv$Mo_hinh[1], "-",
+          compare_cv$CV_RMSE[1], "\n"))
+
+```
+```{r}
+#install.packages("Metrics")
+```
+
+
+6, Đánh giá trên tập test
+```{r}
+# ============================================================
+# HỒI QUY RIDGE - ĐÁNH GIÁ MÔ HÌNH TIỂU ĐƯỜNG (KAGGLE)
+# ============================================================
+# install.packages(c("glmnet", "ggplot2", "gridExtra", "Metrics"))
+library(glmnet)
+library(ggplot2)
+library(gridExtra)
+library(Metrics)  # rmse, mae
+
+# ============================================================
+# BƯỚC 1: CHUẨN BỊ MA TRẬN X VÀ VECTOR Y
+# ============================================================
+# Giả sử cột mục tiêu là "Outcome" (0/1) hoặc biến liên tục
+# Thay "Outcome" bằng tên cột mục tiêu thực tế của bạn
+
+target_col <- "target"   # <-- ĐỔI NẾU CẦN
+
+X_train <- as.matrix(train_data[, !names(train_data) %in% target_col])
+y_train <- train_data[[target_col]]
+
+X_test  <- as.matrix(test_data[, !names(test_data) %in% target_col])
+y_test  <- test_data[[target_col]]
+
+# ============================================================
+# BƯỚC 2: CHỌN LAMBDA TỐI ƯU BẰNG CROSS-VALIDATION
+# ============================================================
+set.seed(2026)
+cv_ridge <- cv.glmnet(
+  x      = X_train,
+  y      = y_train,
+  alpha  = 0,          # alpha = 0 → Ridge
+  nfolds = 10
+)
+
+best_lambda <- cv_ridge$lambda.min
+cat("=== Lambda tối ưu (CV) ===\n")
+cat(sprintf("lambda.min  = %.6f\n", cv_ridge$lambda.min))
+cat(sprintf("lambda.1se  = %.6f\n\n", cv_ridge$lambda.1se))
+
+# ============================================================
+# BƯỚC 3: HUẤN LUYỆN MÔ HÌNH RIDGE VỚI LAMBDA TỐI ƯU
+# ============================================================
+ridge_model <- glmnet(
+  x     = X_train,
+  y     = y_train,
+  alpha = 0,
+  lambda = best_lambda
+)
+
+# In hệ số hồi quy
+cat("=== Hệ số hồi quy Ridge ===\n")
+print(coef(ridge_model))
+cat("\n")
+
+# ============================================================
+# BƯỚC 4: DỰ ĐOÁN
+# ============================================================
+pred_train <- as.vector(predict(ridge_model, newx = X_train, s = best_lambda))
+pred_test  <- as.vector(predict(ridge_model, newx = X_test,  s = best_lambda))
+
+# ============================================================
+# BƯỚC 5: HÀM TÍNH CÁC CHỈ SỐ ĐÁNH GIÁ
+# ============================================================
+evaluate_model <- function(actual, predicted, dataset_name) {
+  ss_res <- sum((actual - predicted)^2)
+  ss_tot <- sum((actual - mean(actual))^2)
+  r2     <- 1 - ss_res / ss_tot
+  rmse_v <- rmse(actual, predicted)
+  mae_v  <- mae(actual, predicted)
+  mse_v  <- mean((actual - predicted)^2)
+  
+  cat(sprintf("---------- %s ----------\n", dataset_name))
+  cat(sprintf("  R²   (R-squared) : %.4f\n", r2))
+  cat(sprintf("  MSE  (Mean Sq E) : %.4f\n", mse_v))
+  cat(sprintf("  RMSE             : %.4f\n", rmse_v))
+  cat(sprintf("  MAE              : %.4f\n\n", mae_v))
+  
+  return(list(r2 = r2, mse = mse_v, rmse = rmse_v, mae = mae_v))
+}
+
+cat("========== KẾT QUẢ ĐÁNH GIÁ MÔ HÌNH RIDGE ==========\n\n")
+metrics_train <- evaluate_model(y_train, pred_train, "TẬP TRAIN")
+metrics_test  <- evaluate_model(y_test,  pred_test,  "TẬP TEST")
+
+# Bảng so sánh
+comparison <- data.frame(
+  Chi_so = c("R^2", "MSE", "RMSE", "MAE"),
+  Train   = round(c(metrics_train$r2, metrics_train$mse,
+                    metrics_train$rmse, metrics_train$mae), 4),
+  Test    = round(c(metrics_test$r2,  metrics_test$mse,
+                    metrics_test$rmse, metrics_test$mae), 4)
+)
+cat("========== BẢNG SO SÁNH TRAIN vs TEST ==========\n")
+print(comparison, row.names = FALSE)
+cat("\n")
+
+# ============================================================
+# BƯỚC 6: BIỂU ĐỒ
+# ============================================================
+
+# --- 6.1: Giá trị thực vs Dự đoán (Train) ---
+df_train <- data.frame(Actual = y_train, Predicted = pred_train)
+p1 <- ggplot(df_train, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5, color = "#2196F3", size = 2) +
+  geom_abline(slope = 1, intercept = 0,
+              color = "red", linewidth = 1, linetype = "dashed") +
+  labs(
+    title    = "Train: Thực tế vs Dự đoán",
+    subtitle = sprintf("R² = %.4f | RMSE = %.4f", metrics_train$r2, metrics_train$rmse),
+    x = "Giá trị thực tế",
+    y = "Giá trị dự đoán"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+# --- 6.2: Giá trị thực vs Dự đoán (Test) ---
+df_test <- data.frame(Actual = y_test, Predicted = pred_test)
+p2 <- ggplot(df_test, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.6, color = "#4CAF50", size = 2) +
+  geom_abline(slope = 1, intercept = 0,
+              color = "red", linewidth = 1, linetype = "dashed") +
+  labs(
+    title    = "Test: Thực tế vs Dự đoán",
+    subtitle = sprintf("R² = %.4f | RMSE = %.4f", metrics_test$r2, metrics_test$rmse),
+    x = "Giá trị thực tế",
+    y = "Giá trị dự đoán"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+# --- 6.3: Phần dư (Residuals) - Train ---
+df_train$Residual <- df_train$Actual - df_train$Predicted
+p3 <- ggplot(df_train, aes(x = Predicted, y = Residual)) +
+  geom_point(alpha = 0.5, color = "#FF9800", size = 2) +
+  geom_hline(yintercept = 0, color = "red",
+             linewidth = 1, linetype = "dashed") +
+  labs(
+    title = "Train: Phần dư vs Dự đoán",
+    x = "Giá trị dự đoán",
+    y = "Phần dư (Residual)"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+# --- 6.4: Phần dư (Residuals) - Test ---
+df_test$Residual <- df_test$Actual - df_test$Predicted
+p4 <- ggplot(df_test, aes(x = Predicted, y = Residual)) +
+  geom_point(alpha = 0.6, color = "#9C27B0", size = 2) +
+  geom_hline(yintercept = 0, color = "red",
+             linewidth = 1, linetype = "dashed") +
+  labs(
+    title = "Test: Phần dư vs Dự đoán",
+    x = "Giá trị dự đoán",
+    y = "Phần dư (Residual)"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+# --- 6.5: Cross-Validation Lambda ---
+p5 <- ggplot(data.frame(
+  log_lambda = log(cv_ridge$lambda),
+  mse        = cv_ridge$cvm
+), aes(x = log_lambda, y = mse)) +
+  geom_line(color = "#E91E63", linewidth = 1) +
+  geom_vline(xintercept = log(best_lambda),
+             linetype = "dashed", color = "blue", linewidth = 1) +
+  labs(
+    title    = "Cross-Validation: Chọn Lambda",
+    subtitle = sprintf("Lambda tối ưu = %.5f", best_lambda),
+    x = "log(Lambda)",
+    y = "MSE (CV)"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+# --- 6.6: Hệ số Ridge theo Lambda ---
+# Lấy toàn bộ đường regularization path
+ridge_full <- glmnet(X_train, y_train, alpha = 0)
+coef_matrix <- as.matrix(coef(ridge_full))[-1, ]  # bỏ intercept
+
+df_coef <- data.frame(
+  log_lambda = rep(log(ridge_full$lambda), each = nrow(coef_matrix)),
+  coefficient = as.vector(coef_matrix),
+  variable    = rep(rownames(coef_matrix), times = ncol(coef_matrix))
+)
+
+p6 <- ggplot(df_coef, aes(x = log_lambda, y = coefficient,
+                           color = variable, group = variable)) +
+  geom_line(linewidth = 0.9) +
+  geom_vline(xintercept = log(best_lambda),
+             linetype = "dashed", color = "black", linewidth = 1) +
+  labs(
+    title    = "Ridge: Hệ số theo log(Lambda)",
+    subtitle = "Đường đứt: lambda tối ưu",
+    x = "log(Lambda)",
+    y = "Hệ số (Coefficient)",
+    color = "Biến"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"),
+        legend.position = "right")
+
+# --- In tất cả biểu đồ ra 1 lưới ---
+grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 2)
+```
+
+
+```{r}
+# Biểu đồ: Giá trị thực tế vs Dự đoán trên tập TEST
+df_test <- data.frame(Actual = y_test, Predicted = pred_test)
+
+ggplot(df_test, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.6, color = "#4CAF50", size = 2.5) +
+  geom_abline(slope = 1, intercept = 0,
+              color = "red", linewidth = 1, linetype = "dashed") +
+  labs(
+    title    = "Test: Gia tri thuc te vs Du doan (Ridge Regression)",
+    x = "Chỉ số bệnh tiểu đường thực tế",
+    y = "Chỉ số bệnh tiểu đường dự đoán"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
